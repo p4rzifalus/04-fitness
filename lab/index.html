@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Прогон записанных подходов</title>
+<style>
+  :root{--graphite:#171A1C;--slate:#232A2D;--chalk:#F0EDE8;--dim:#8A9296;--teal:#79B3A5;--amber:#E8B23A;--alarm:#C86A5E}
+  *{box-sizing:border-box}
+  body{margin:0;padding:1.5rem;background:var(--graphite);color:var(--chalk);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;line-height:1.5}
+  h1{font-size:1.3rem;font-weight:500;margin:0 0 .3rem}
+  p.lede{color:var(--dim);margin:0 0 1.5rem;max-width:60ch}
+  .wrap{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:1.5rem;align-items:start}
+  @media (max-width:760px){.wrap{grid-template-columns:1fr}}
+  canvas{width:100%;height:280px;background:var(--slate);border-radius:12px;display:block}
+  .panel{background:var(--slate);border-radius:12px;padding:1rem}
+  .drow{margin-bottom:.8rem}
+  .drow label{display:flex;justify-content:space-between;font-size:.85rem;color:var(--dim);margin-bottom:.25rem}
+  .drow input[type=range]{width:100%;accent-color:var(--teal)}
+  .dval{color:var(--chalk);font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;margin-top:1.2rem;font-size:.92rem}
+  th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid rgba(240,237,232,.12)}
+  th{color:var(--dim);font-weight:400}
+  td.ok{color:var(--teal)} td.bad{color:var(--alarm)}
+  input[type=file]{color:var(--dim);font:inherit}
+  .empty{color:var(--dim)}
+</style>
+</head>
+<body>
+<h1>Прогон записанных подходов</h1>
+<p class="lede">Загрузи JSON, записанный кнопкой «Скачать подход». Машина состояний та же,
+что в приложении, но без камеры — можно подбирать пороги за столом и сразу видеть,
+совпало ли число повторов с реальным.</p>
+
+<div class="wrap">
+  <div>
+    <canvas id="plot"></canvas>
+    <table id="results">
+      <thead><tr><th>Файл</th><th>Реально</th><th>Насчитано</th><th>Неполных</th></tr></thead>
+      <tbody><tr><td colspan="4" class="empty">Пока ничего не загружено</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <input type="file" id="files" multiple accept="application/json">
+    <div id="knobs" style="margin-top:1rem"></div>
+  </div>
+</div>
+
+<script type="module">
+import { EXERCISES } from "../src/exercises.js";
+import { RepCounter, Smoother } from "../src/core.js";
+
+const ex = structuredClone(EXERCISES.squat);
+const KNOBS = [
+  ["enterDown", "Порог «ушёл вниз»", .05, .5, .01],
+  ["enterUp", "Порог «встал»", .5, .95, .01],
+  ["fullDepth", "Порог полной глубины", .05, .5, .01],
+  ["minRepMs", "Мин. длит. повтора, мс", 200, 2000, 50],
+  ["smoothWindow", "Окно сглаживания", 1, 15, 1],
+];
+
+let sessions = [];
+
+const knobsEl = document.getElementById("knobs");
+for (const [key, label, min, max, step] of KNOBS) {
+  const row = document.createElement("div");
+  row.className = "drow";
+  row.innerHTML = `<label>${label}<span class="dval">${ex[key]}</span></label>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${ex[key]}">`;
+  const input = row.querySelector("input"), out = row.querySelector(".dval");
+  input.addEventListener("input", () => {
+    ex[key] = parseFloat(input.value);
+    out.textContent = ex[key];
+    runAll();
+  });
+  knobsEl.appendChild(row);
+}
+
+document.getElementById("files").addEventListener("change", async (e) => {
+  sessions = [];
+  for (const file of e.target.files) {
+    try {
+      const data = JSON.parse(await file.text());
+      sessions.push({ name: file.name, data });
+    } catch (err) {
+      console.warn("не разобрал", file.name, err);
+    }
+  }
+  runAll();
+});
+
+function replay(session) {
+  const counter = new RepCounter(ex);
+  const smoother = new Smoother(ex.smoothWindow);
+  const { frames, calMin, calMax } = session.data;
+  const angles = frames.map(f => f.a);
+  counter.calibrate(calMin ?? Math.min(...angles), calMax ?? Math.max(...angles));
+  const series = [];
+  for (const f of frames) {
+    const a = smoother.push(f.a);
+    counter.update(a, f.t);
+    series.push(a);
+  }
+  return { counter, series };
+}
+
+function runAll() {
+  const tbody = document.querySelector("#results tbody");
+  tbody.innerHTML = "";
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">Пока ничего не загружено</td></tr>';
+    draw(null);
+    return;
+  }
+  let first = null;
+  for (const s of sessions) {
+    const { counter, series } = replay(s);
+    if (!first) first = { series, counter, data: s.data };
+    const expected = s.data.expected;
+    const match = expected == null || expected === counter.count;
+    tbody.insertAdjacentHTML("beforeend",
+      `<tr><td>${s.name}</td><td>${expected ?? "—"}</td>
+       <td class="${match ? "ok" : "bad"}">${counter.count}</td>
+       <td>${counter.partials}</td></tr>`);
+  }
+  draw(first);
+}
+
+function draw(first) {
+  const c = document.getElementById("plot");
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+  const ctx = c.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const w = c.clientWidth, h = c.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  if (!first) return;
+
+  const { series, counter } = first;
+  const lo = Math.min(...series), hi = Math.max(...series);
+  const y = v => h - 14 - ((v - lo) / (hi - lo || 1)) * (h - 28);
+  const t = counter.thresholds();
+
+  for (const [val, color, label] of [[t.up, "#79B3A5", "встал"], [t.down, "#E8B23A", "засчитано"], [t.deep, "#C86A5E", "полная глубина"]]) {
+    ctx.strokeStyle = color; ctx.globalAlpha = .5; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(0, y(val)); ctx.lineTo(w, y(val)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = color; ctx.font = "11px system-ui";
+    ctx.fillText(label, 6, y(val) - 4);
+  }
+
+  ctx.strokeStyle = "#F0EDE8"; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  series.forEach((v, i) => {
+    const x = (i / (series.length - 1 || 1)) * w;
+    i === 0 ? ctx.moveTo(x, y(v)) : ctx.lineTo(x, y(v));
+  });
+  ctx.stroke();
+}
+
+window.addEventListener("resize", () => runAll());
+</script>
+</body>
+</html>

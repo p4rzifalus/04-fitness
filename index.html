@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Присед</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@200;400&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --graphite:#171A1C; --slate:#232A2D; --chalk:#F0EDE8;
+    --dim:#8A9296; --teal:#79B3A5; --amber:#E8B23A;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--graphite);color:var(--chalk);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;overflow:hidden;-webkit-tap-highlight-color:transparent}
+  #stage{position:fixed;inset:0}
+  video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  video{filter:brightness(.42) saturate(.5);transition:filter .4s}
+  body.state-counting video{filter:brightness(.3) saturate(.4)}
+  body.mirrored video, body.mirrored #overlay{transform:scaleX(-1)}
+
+  #hud{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;pointer-events:none;padding:0 1.2rem 6rem}
+  #count{font-family:"Oswald",sans-serif;font-weight:200;
+    font-size:min(42vh,48vw);line-height:.8;letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums;text-shadow:0 0 60px rgba(0,0,0,.7);display:none}
+  body.state-counting #count{display:block}
+  body.state-counting #hud{padding-right:calc(1.2rem + 56px)}
+  #count.pop{animation:pop .18s ease-out}
+  @keyframes pop{from{transform:scale(1.06)}to{transform:scale(1)}}
+
+  #hint{max-width:26ch;text-align:center;font-size:1.15rem;line-height:1.5;
+    text-shadow:0 0 26px rgba(0,0,0,.9)}
+  body.state-counting #hint{margin-top:2rem;font-size:1rem;color:var(--dim)}
+  #hint b{font-weight:500}
+  #hint.good b{color:var(--teal)}
+  #hint.warn b{color:var(--amber)}
+
+  #hold{width:min(240px,60vw);height:3px;margin-top:1.4rem;background:rgba(240,237,232,.2);
+    border-radius:2px;overflow:hidden;opacity:0;transition:opacity .2s}
+  #hold.on{opacity:1}
+  #holdFill{height:100%;width:0%;background:var(--teal)}
+
+  #gauge{position:absolute;right:14px;top:16vh;bottom:16vh;width:34px;display:none}
+  body.state-counting #gauge{display:block}
+  #track{position:absolute;inset:0;border:1px solid rgba(240,237,232,.22);
+    border-radius:17px;overflow:hidden;background:rgba(23,26,28,.35)}
+  #fill{position:absolute;left:0;right:0;bottom:0;height:0%;background:var(--teal);
+    opacity:.55;transition:height .06s linear,background-color .2s}
+  .mark{position:absolute;left:-6px;right:-6px;height:1px;background:var(--chalk);opacity:.5}
+  .mark::after{content:attr(data-label);position:absolute;right:44px;top:-.65em;
+    font-size:.72rem;color:var(--dim);white-space:nowrap}
+
+  #controls{position:absolute;left:0;right:0;bottom:0;
+    padding:1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+    display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;
+    background:linear-gradient(to top,rgba(23,26,28,.92),rgba(23,26,28,0))}
+  button{font:inherit;font-weight:500;color:var(--chalk);background:var(--slate);
+    border:1px solid rgba(240,237,232,.18);border-radius:10px;padding:.7rem 1.1rem;cursor:pointer}
+  button:hover{background:#2c3538}
+  button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  button[disabled]{opacity:.4;cursor:default}
+  #startBtn{background:var(--teal);color:#10201C;border-color:transparent}
+  #startBtn:hover{background:#8ac2b4}
+  label.toggle{display:flex;align-items:center;gap:.45rem;color:var(--dim);font-size:.92rem;margin-left:auto}
+
+  /* панель порогов */
+  #debug{position:absolute;left:0;right:0;top:0;max-height:70vh;overflow:auto;
+    background:rgba(23,26,28,.96);border-bottom:1px solid rgba(240,237,232,.15);
+    padding:1rem 1rem 1.2rem;transform:translateY(-102%);transition:transform .25s}
+  #debug.on{transform:none}
+  #debugHead{display:flex;align-items:center;gap:.6rem;margin-bottom:.8rem}
+  #debugLive{font-variant-numeric:tabular-nums;color:var(--teal);font-size:.9rem;margin-right:auto}
+  #debug button{padding:.4rem .8rem;font-size:.88rem}
+  .drow{margin-bottom:.7rem}
+  .drow label{display:flex;justify-content:space-between;font-size:.85rem;color:var(--dim);margin-bottom:.25rem}
+  .dval{color:var(--chalk);font-variant-numeric:tabular-nums}
+  .drow input{width:100%;accent-color:var(--teal)}
+
+  @media (prefers-reduced-motion:reduce){
+    #count.pop{animation:none}#fill,#holdFill,#debug{transition:none}
+  }
+</style>
+</head>
+<body class="mirrored state-idle">
+<div id="stage">
+  <video id="cam" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <div id="gauge">
+    <div id="track"><div id="fill"></div></div>
+    <div class="mark" id="markUp" data-label="встал" style="bottom:75%"></div>
+    <div class="mark" id="markDown" data-label="засчитано" style="bottom:25%"></div>
+  </div>
+
+  <div id="hud">
+    <div id="count">0</div>
+    <div id="hint">Поставь телефон вертикально в паре метров от себя.</div>
+    <div id="hold"><div id="holdFill"></div></div>
+  </div>
+
+  <div id="debug">
+    <div id="debugHead">
+      <span id="debugLive">—</span>
+      <button id="debugReset">Сбросить пороги</button>
+      <button id="debugClose">Закрыть</button>
+    </div>
+    <div id="debugRows"></div>
+  </div>
+
+  <div id="controls">
+    <button id="startBtn">Включить камеру</button>
+    <button id="flipBtn" disabled>Сменить камеру</button>
+    <button id="resetBtn" disabled>Сбросить</button>
+    <button id="saveBtn" disabled>Скачать подход</button>
+    <button id="debugBtn" disabled>Пороги</button>
+    <label class="toggle"><input type="checkbox" id="voice" checked> Считать вслух</label>
+  </div>
+</div>
+
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
